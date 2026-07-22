@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from jtt1031_reg_tool import (
@@ -70,6 +72,12 @@ def test_build_frame_read_command():
     assert frame == bytes([0xA5, 0x02, 0x00, 0x0B, 0x00, 0x16, 0x03, 0xA0, 0x10, 0x04, 0x7F])
 
 
+@pytest.mark.parametrize("address", [-1, 0x100])
+def test_build_frame_rejects_address_outside_one_byte(address):
+    with pytest.raises(ValueError, match="address"):
+        build_frame(address, CMD_READ)
+
+
 def test_parse_response_returns_payload():
     payload = bytes([1, 3, 0xA0, 0x10, 4, 0x11, 0x22, 0x33, 0x44])
     frame = response_frame(0x02, CMD_READ, payload)
@@ -104,6 +112,36 @@ def test_invalid_state_raises():
         assert "state" in str(exc).lower()
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_read_invalid_state_is_reported_even_when_read_data_is_absent():
+    payload = bytes([0, 3, 0xA0, 0x10, 4])
+    serial = FakeSerial(response_frame(0, CMD_READ, payload))
+    ctl = RegController("COM1")
+    ctl.serial = serial
+
+    with pytest.raises(ValueError, match="state"):
+        ctl.read_register(port=3, dev_address=0xA0, start_reg=0x10, size=4)
+
+
+@pytest.mark.parametrize("field_name,kwargs", [
+    ("port", {"port": 256, "dev_address": 0xA0, "start_reg": 0x10, "size": 4}),
+    ("dev_address", {"port": 3, "dev_address": -1, "start_reg": 0x10, "size": 4}),
+    ("start_reg", {"port": 3, "dev_address": 0xA0, "start_reg": 0x100, "size": 4}),
+])
+def test_read_register_rejects_byte_fields_outside_range(field_name, kwargs):
+    ctl = RegController("COM1")
+    ctl.serial = FakeSerial(b"")
+    with pytest.raises(ValueError, match=field_name):
+        ctl.read_register(**kwargs)
+
+
+def test_transact_timeout_includes_operator_guidance():
+    serial = FakeSerial(b"")
+    ctl = RegController("COM1")
+    ctl.serial = serial
+    with pytest.raises(TimeoutError, match="serial port.*board address.*online"):
+        ctl.read_register(port=0, dev_address=0xA0, start_reg=0, size=1)
 
 
 def test_parse_int_hex_and_decimal():

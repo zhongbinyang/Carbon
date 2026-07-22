@@ -26,17 +26,29 @@ CMD_WRITE = 0x0017
 
 BAUD_CHOICES = ["9600", "19200", "38400", "57600", "115200"]
 
+_TIMEOUT_HINT = (
+    "check serial port connection, baud rate, board address, "
+    "and that the board is powered on and online"
+)
+
 
 def checksum(data):
     return sum(data) & 0xFF
 
 
+def _u8(value, name):
+    if not isinstance(value, int) or not 0 <= value <= 0xFF:
+        raise ValueError(f"{name} must be 0..255")
+    return value
+
+
 def build_frame(address, command, data=b""):
+    address = _u8(address, "address")
     data = bytes(data or b"")
     length = 7 + len(data)
     frame = bytearray([
         0xA5,
-        address & 0xFF,
+        address,
         (length >> 8) & 0xFF,
         length & 0xFF,
         (command >> 8) & 0xFF,
@@ -87,7 +99,7 @@ class RegController:
         self.port_name = port_name
         self.baudrate = baudrate
         self.timeout = timeout
-        self.address = address
+        self.address = _u8(address, "address")
         self.serial = None
 
     def open(self):
@@ -120,31 +132,43 @@ class RegController:
 
         header = self.serial.read(4)
         if len(header) < 4:
-            raise TimeoutError("timeout waiting response header")
+            raise TimeoutError(
+                f"timeout waiting response header — {_TIMEOUT_HINT}"
+            )
         length = (header[2] << 8) | header[3]
         if length < 7:
             raise ValueError("response length too short")
         rest = self.serial.read(length - 4)
         if len(rest) < length - 4:
-            raise TimeoutError("timeout waiting response body")
+            raise TimeoutError(
+                f"timeout waiting response body — {_TIMEOUT_HINT}"
+            )
         response = header + rest
         logger.debug("RX: %s", response.hex(" ").upper())
         return parse_response(response, self.address, command)
 
     def read_register(self, port, dev_address, start_reg, size):
+        port = _u8(port, "port")
+        dev_address = _u8(dev_address, "dev_address")
+        start_reg = _u8(start_reg, "start_reg")
         if not 1 <= size <= 128:
             raise ValueError("size must be 1..128")
         payload = self._transact(CMD_READ, bytes([port, dev_address, start_reg, size]))
-        if len(payload) < 5 + size:
+        if len(payload) < 5:
             raise ValueError("0x0016 response too short")
         state, r_port, r_dev, r_start, r_size = payload[:5]
         if state != 1:
             raise ValueError(f"invalid state: {state}")
         if (r_port, r_dev, r_start, r_size) != (port, dev_address, start_reg, size):
             raise ValueError("0x0016 echo mismatch")
+        if len(payload) < 5 + size:
+            raise ValueError("0x0016 response too short")
         return payload[5:5 + size]
 
     def write_register(self, port, dev_address, start_reg, data):
+        port = _u8(port, "port")
+        dev_address = _u8(dev_address, "dev_address")
+        start_reg = _u8(start_reg, "start_reg")
         data = bytes(data)
         if not 1 <= len(data) <= 128:
             raise ValueError("data length must be 1..128")
@@ -353,7 +377,7 @@ class RegToolApp(ttk.Frame):
             self.log("没有发现可用串口，请检查硬件连接")
 
     def _get_board_address(self):
-        return parse_int(self.entry_address.get())
+        return _u8(parse_int(self.entry_address.get()), "address")
 
     def is_connected(self):
         return (
@@ -399,9 +423,9 @@ class RegToolApp(ttk.Frame):
                 self.log(f"连接失败: {exc}")
 
     def _read_params(self):
-        port = parse_int(self.entry_port.get())
-        dev_address = parse_int(self.entry_dev.get())
-        start_reg = parse_int(self.entry_start.get())
+        port = _u8(parse_int(self.entry_port.get()), "port")
+        dev_address = _u8(parse_int(self.entry_dev.get()), "dev_address")
+        start_reg = _u8(parse_int(self.entry_start.get()), "start_reg")
         size = int(self.entry_size.get())
         return port, dev_address, start_reg, size
 
