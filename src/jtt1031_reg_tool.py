@@ -1,7 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Standalone JTT1031 register-mode (0x0016/0x0017) serial test tool."""
+"""Standalone JTT1031 register-mode (0x0016/0x0017) serial test tool.
+
+Usage:
+    python src/jtt1031_reg_tool.py
+
+Protocol: JTT1031 RS232 115200 8N1
+Commands: 0x0016 register read, 0x0017 register write
+"""
 
 import logging
 import threading
