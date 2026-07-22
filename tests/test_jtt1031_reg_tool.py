@@ -11,6 +11,8 @@ from jtt1031_reg_tool import (
     RegController,
     build_frame,
     checksum,
+    parse_hex_bytes,
+    parse_int,
     parse_response,
 )
 
@@ -102,3 +104,13 @@ def test_invalid_state_raises():
         assert "state" in str(exc).lower()
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_parse_int_hex_and_decimal():
+    assert parse_int("A0") == 0xA0
+    assert parse_int("0x10") == 0x10
+    assert parse_int("16") == 16
+
+
+def test_parse_hex_bytes():
+    assert parse_hex_bytes("AA BB CC") == bytes([0xAA, 0xBB, 0xCC])
