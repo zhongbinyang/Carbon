@@ -89,24 +89,40 @@ class TecAsciiController:
         self.serial = None
 
     def open(self):
-        self.serial = serial.Serial(
-            port=self.port_name,
-            baudrate=self.baudrate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=self.timeout,
-            xonxoff=False,
-            rtscts=False,
-            dsrdtr=False,
-        )
-        self.serial.reset_input_buffer()
-        self.serial.reset_output_buffer()
-        # Drain any leftover auto-send junk briefly
-        time.sleep(0.05)
-        self.serial.reset_input_buffer()
-        self.transact("T0")
-        self.transact("SC")
+        try:
+            self.serial = serial.Serial(
+                port=self.port_name,
+                baudrate=self.baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=self.timeout,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
+            )
+            self.serial.reset_input_buffer()
+            self.serial.reset_output_buffer()
+            # Drain any leftover auto-send junk briefly
+            time.sleep(0.05)
+            self.serial.reset_input_buffer()
+
+            t0_resp = self.transact("T0")
+            if _strip_line(t0_resp) != "0":
+                raise ValueError(
+                    f"T0 failed: expected '0', got {t0_resp!r}; "
+                    f"auto-send junk may have been read. {_TIMEOUT_HINT}"
+                )
+
+            sc_resp = self.transact("SC")
+            if _strip_line(sc_resp).upper() != "OK":
+                raise ValueError(
+                    f"SC failed: expected 'OK', got {sc_resp!r}; "
+                    f"auto-send junk may have been read. {_TIMEOUT_HINT}"
+                )
+        except Exception:
+            self.close()
+            raise
 
     def close(self):
         if self.serial and self.serial.is_open:
@@ -379,6 +395,8 @@ class TecAsciiApp(ttk.Frame):
                 self.log(f"已连接 {port} @ {baud} (T0+SC 已发送)")
                 self._restart_auto_refresh()
             except Exception as exc:
+                if self.controller is not None:
+                    self.controller.close()
                 self.controller = None
                 messagebox.showerror(
                     "串口错误",

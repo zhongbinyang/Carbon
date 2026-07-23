@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from tcb_tec_ascii_tool import (
@@ -139,3 +141,42 @@ def test_status_polls_six_commands():
     }
     for cmd in (b"RP1\r\n", b"RS1\r\n", b"RD\r\n", b"RR\r\n", b"RE\r\n", b"REN\r\n"):
         assert cmd in serial.written
+
+
+def _patch_serial_ctor(monkeypatch, serial):
+    class FakeSerialCtor:
+        def __init__(self, **kwargs):
+            self.__dict__.update(serial.__dict__)
+            self.is_open = True
+            for name in (
+                "reset_input_buffer",
+                "reset_output_buffer",
+                "write",
+                "flush",
+                "read",
+                "close",
+            ):
+                setattr(self, name, getattr(serial, name))
+
+    import tcb_tec_ascii_tool as mod
+
+    monkeypatch.setattr(mod.serial, "Serial", FakeSerialCtor)
+    return mod
+
+
+def test_open_closes_port_when_t0_response_wrong(monkeypatch):
+    serial = FakeSerial(["P+25.20", "OK"])
+    _patch_serial_ctor(monkeypatch, serial)
+    ctl = TecAsciiController("COM1")
+    with pytest.raises(ValueError, match="T0 failed"):
+        ctl.open()
+    assert serial.is_open is False
+
+
+def test_open_closes_port_when_sc_response_wrong(monkeypatch):
+    serial = FakeSerial(["0", "P+25.20"])
+    _patch_serial_ctor(monkeypatch, serial)
+    ctl = TecAsciiController("COM1")
+    with pytest.raises(ValueError, match="SC failed"):
+        ctl.open()
+    assert serial.is_open is False
