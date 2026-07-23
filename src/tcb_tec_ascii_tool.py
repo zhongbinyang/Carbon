@@ -1,7 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Standalone TCB TEC ASCII (V2.05) control tool."""
+"""Standalone TCB TEC ASCII (V2.05) control tool.
+
+Usage:
+    python src/tcb_tec_ascii_tool.py
+
+Protocol: TCB V2.05 ASCII RS232 9600 8N1, terminator CRLF
+Commands: S1, RP1, RS1, SEN0/SEN1, REN, RD, RR, RE, T0, SC
+"""
 
 import logging
 import threading
