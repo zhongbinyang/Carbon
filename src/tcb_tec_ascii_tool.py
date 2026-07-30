@@ -82,44 +82,46 @@ def parse_tec_enable(line):
 
 
 class TecAsciiController:
-    def __init__(self, port_name, baudrate=9600, timeout=1.0):
+    def __init__(self, port_name, baudrate=9600, timeout=1.0, handshake_timeout=None):
         self.port_name = port_name
         self.baudrate = baudrate
         self.timeout = timeout
+        # Connect handshake may need longer while auto-send is flooding.
+        self.handshake_timeout = (
+            handshake_timeout if handshake_timeout is not None else max(timeout, 3.0)
+        )
         self.serial = None
 
     def open(self):
         try:
+            # Short inter-byte timeout; handshake uses an explicit deadline.
             self.serial = serial.Serial(
                 port=self.port_name,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=self.timeout,
+                timeout=0.05,
+                write_timeout=1.0,
                 xonxoff=False,
                 rtscts=False,
                 dsrdtr=False,
             )
+            # Avoid DTR/RTS glitches that can reset some USB-UART boards.
+            try:
+                self.serial.dtr = False
+                self.serial.rts = False
+            except Exception:
+                pass
+
             self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
-            # Drain any leftover auto-send junk briefly
-            time.sleep(0.05)
-            self.serial.reset_input_buffer()
+            self._drain_until_quiet(quiet_s=0.15, max_s=2.0)
 
-            t0_resp = self.transact("T0")
-            if _strip_line(t0_resp) != "0":
-                raise ValueError(
-                    f"T0 failed: expected '0', got {t0_resp!r}; "
-                    f"auto-send junk may have been read. {_TIMEOUT_HINT}"
-                )
-
-            sc_resp = self.transact("SC")
-            if _strip_line(sc_resp).upper() != "OK":
-                raise ValueError(
-                    f"SC failed: expected 'OK', got {sc_resp!r}; "
-                    f"auto-send junk may have been read. {_TIMEOUT_HINT}"
-                )
+            # Vendor PC software stops *current* auto-send with SC first.
+            # Then T0 disables power-on auto-send for later reboots.
+            self.transact("SC", expect="OK", timeout=self.handshake_timeout)
+            self.transact("T0", expect="0", timeout=self.handshake_timeout)
         except Exception:
             self.close()
             raise
@@ -132,7 +134,71 @@ class TecAsciiController:
         if not self.serial or not self.serial.is_open:
             raise RuntimeError("serial not open")
 
-    def transact(self, command):
+    def _drain_until_quiet(self, quiet_s=0.15, max_s=2.0):
+        """Drop auto-send / boot noise until the line is quiet."""
+        self._ensure_open()
+        if not hasattr(self.serial, "in_waiting"):
+            time.sleep(min(quiet_s, 0.02))
+            self.serial.reset_input_buffer()
+            return
+
+        deadline = time.time() + max_s
+        last_data = time.time()
+        while time.time() < deadline:
+            waiting = self.serial.in_waiting or 0
+            if waiting > 0:
+                junk = self.serial.read(waiting)
+                if junk:
+                    logger.debug(
+                        "drain RX: %s", junk.decode("ascii", errors="replace").strip()
+                    )
+                    last_data = time.time()
+                continue
+            if time.time() - last_data >= quiet_s:
+                break
+            time.sleep(0.02)
+        self.serial.reset_input_buffer()
+
+    @staticmethod
+    def _expect_match(line, expect):
+        if expect is None:
+            return True
+        text = _strip_line(line)
+        if callable(expect):
+            return bool(expect(text))
+        return text.upper() == str(expect).upper()
+
+    def _read_line(self, deadline):
+        """Read one text line. Accepts CRLF, LF, or CR terminators."""
+        buf = bytearray()
+        while time.time() < deadline:
+            chunk = self.serial.read(1)
+            if not chunk:
+                continue
+            byte = chunk[0]
+            if byte in (0x0A, 0x0D):
+                # Consume optional LF after CR.
+                if byte == 0x0D:
+                    nxt = self.serial.read(1)
+                    if nxt and nxt != b"\n" and nxt != b"\r":
+                        # Unexpected trailing byte; keep for next read by re-queuing
+                        # is hard without unread — ignore rare case and treat as end.
+                        pass
+                line = buf.decode("ascii", errors="replace").strip()
+                logger.debug("RX: %s", line)
+                return line
+            buf.append(byte)
+        raw = bytes(buf)
+        raise TimeoutError(
+            f"timeout waiting line ending; got {raw!r} ({raw.hex(' ') if raw else 'empty'}); "
+            f"{_TIMEOUT_HINT}"
+        )
+
+    def transact(self, command, expect=None, timeout=None):
+        """
+        Send one ASCII command and return a response line.
+        If expect is set (e.g. 'OK' / '0'), skip auto-send junk lines until a match.
+        """
         self._ensure_open()
         cmd = command.strip().upper()
         payload = (cmd + "\r\n").encode("ascii")
@@ -141,19 +207,21 @@ class TecAsciiController:
         self.serial.write(payload)
         self.serial.flush()
 
-        deadline = time.time() + self.timeout
-        buf = bytearray()
+        wait = self.timeout if timeout is None else timeout
+        deadline = time.time() + wait
+        last = None
         while time.time() < deadline:
-            chunk = self.serial.read(1)
-            if not chunk:
-                continue
-            buf.extend(chunk)
-            if buf.endswith(b"\r\n"):
-                line = buf[:-2].decode("ascii", errors="replace")
-                logger.debug("RX: %s", line)
-                return line.strip()
+            try:
+                line = self._read_line(deadline)
+            except TimeoutError:
+                break
+            last = line
+            if self._expect_match(line, expect):
+                return line
+            logger.debug("skip unexpected RX while waiting for %r: %s", expect, line)
         raise TimeoutError(
-            f"timeout waiting response for {cmd!r}; {_TIMEOUT_HINT}"
+            f"timeout waiting response for {cmd!r} (expect {expect!r}, last={last!r}); "
+            f"{_TIMEOUT_HINT}"
         )
 
     def set_temp(self, celsius):

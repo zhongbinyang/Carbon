@@ -79,31 +79,29 @@ def test_transact_sends_crlf_and_reads_line():
     assert serial.written == b"SC\r\n"
 
 
-def test_open_sends_t0_then_sc(monkeypatch):
-    serial = FakeSerial(["0", "OK"])
+def test_transact_accepts_lf_only_line_ending():
+    serial = FakeSerial([])
+    serial.response = bytearray(b"OK\n")
+    ctl = TecAsciiController("COM1")
+    ctl.serial = serial
+    assert ctl.transact("SC") == "OK"
 
-    class FakeSerialCtor:
-        def __init__(self, **kwargs):
-            self.__dict__.update(serial.__dict__)
-            self.is_open = True
-            for name in (
-                "reset_input_buffer",
-                "reset_output_buffer",
-                "write",
-                "flush",
-                "read",
-                "close",
-            ):
-                setattr(self, name, getattr(serial, name))
 
-    import tcb_tec_ascii_tool as mod
+def test_transact_skips_autosend_junk_until_expected():
+    serial = FakeSerial(["P+25.20", "D-100", "OK"])
+    ctl = TecAsciiController("COM1")
+    ctl.serial = serial
+    assert ctl.transact("SC", expect="OK") == "OK"
+    assert serial.written == b"SC\r\n"
 
-    monkeypatch.setattr(mod.serial, "Serial", FakeSerialCtor)
+
+def test_open_sends_sc_then_t0(monkeypatch):
+    # Vendor host software stops current auto-send with SC first, then T0.
+    serial = FakeSerial(["OK", "0"])
+    _patch_serial_ctor(monkeypatch, serial)
     ctl = TecAsciiController("COM1")
     ctl.open()
-    assert serial.written.startswith(b"T0\r\n")
-    assert b"SC\r\n" in serial.written
-
+    assert serial.written.index(b"SC\r\n") < serial.written.index(b"T0\r\n")
 
 def test_set_temp_and_tec():
     serial = FakeSerial(["OK", "TEC Enabled!", "TEC Disabled!"])
@@ -164,19 +162,19 @@ def _patch_serial_ctor(monkeypatch, serial):
     return mod
 
 
-def test_open_closes_port_when_t0_response_wrong(monkeypatch):
-    serial = FakeSerial(["P+25.20", "OK"])
+def test_open_closes_port_when_sc_never_ok(monkeypatch):
+    serial = FakeSerial(["P+25.20", "D-1", "E0"])
     _patch_serial_ctor(monkeypatch, serial)
-    ctl = TecAsciiController("COM1")
-    with pytest.raises(ValueError, match="T0 failed"):
+    ctl = TecAsciiController("COM1", timeout=0.2, handshake_timeout=0.2)
+    with pytest.raises(TimeoutError, match="SC"):
         ctl.open()
     assert serial.is_open is False
 
 
-def test_open_closes_port_when_sc_response_wrong(monkeypatch):
-    serial = FakeSerial(["0", "P+25.20"])
+def test_open_closes_port_when_t0_never_zero(monkeypatch):
+    serial = FakeSerial(["OK", "P+25.20", "E0"])
     _patch_serial_ctor(monkeypatch, serial)
-    ctl = TecAsciiController("COM1")
-    with pytest.raises(ValueError, match="SC failed"):
+    ctl = TecAsciiController("COM1", timeout=0.2, handshake_timeout=0.2)
+    with pytest.raises(TimeoutError, match="T0"):
         ctl.open()
     assert serial.is_open is False
